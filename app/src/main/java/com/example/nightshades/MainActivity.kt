@@ -51,6 +51,8 @@ fun ShaderEditorScreen() {
     val context = LocalContext.current
     val activity = LocalContext.current as ComponentActivity
     var shaderValue by remember { mutableStateOf(TextFieldValue("// NightShades prêt\n")) }
+    var fileName by remember { mutableStateOf("my_shader") }
+
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Text("NightShades Editor", style = MaterialTheme.typography.headlineMedium, color = Color.White)
@@ -76,7 +78,20 @@ fun ShaderEditorScreen() {
                 onClick = { shaderValue = updateShaderType(shaderValue, "particles") },
                 label = { Text("Particles") }
             )
+            FilterChip(
+                selected = shaderValue.text.contains("2d_RadialBlur"),
+                onClick = { shaderValue = updateShaderType(shaderValue, "2d_RadialBlur") },
+                label = { Text("2d_RadialBlur") }
+            )
         }
+        OutlinedTextField(
+            value = fileName,
+            onValueChange = { fileName = it },
+            label = { Text("Nom du fichier (sans .gdshader)") },
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            singleLine = true,
+            textStyle = LocalTextStyle.current.copy(color = Color.White)
+        )
         // Nouvelle section : Barre d'outils rapide
         Row(
             modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 8.dp),
@@ -86,6 +101,20 @@ fun ShaderEditorScreen() {
             QuickButton("Add Float") {
                 shaderValue = insertTextAtCursor(shaderValue, "uniform float my_value = 1.0;\n")
             }
+
+            QuickButton("Add int") {
+                shaderValue=insertTextAtCursor(shaderValue,"uniform int my_int = 1 ;\n")
+            }
+            QuickButton("Add vec3") {
+                shaderValue=insertTextAtCursor(shaderValue,"uniform vec3 new_vec_3 = vec3(0,0,0) ;\n")
+            }
+            QuickButton("Add vec4") {
+                shaderValue=insertTextAtCursor(shaderValue,"uniform vec4 new_vec_4 = vec4(0,0,0,0) ;\n")
+            }
+            QuickButton("Add sampler2d") {
+                shaderValue=insertTextAtCursor(shaderValue,"uniform sampler2D new_sampler_2d : hint_screen_texture, filter_linear_mipmap;\n")
+            }
+
         }
 
         TextField(
@@ -118,14 +147,14 @@ fun ShaderEditorScreen() {
             },
             modifier = Modifier.fillMaxWidth().padding(top = 16.dp)
         ) {
-            Text("Générer Base")
+            Text("Générer Base ( 2d canvas Item)")
         }
         Button(
-            onClick = { saveShaderFile(activity, shaderValue.text) },
+            onClick = { saveShaderFile(activity, shaderValue.text, fileName) },
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50)) // Vert pour "Sauvegarder"
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))
         ) {
-            Text("Sauvegarder .gdshader")
+            Text("Sauvegarder sous $fileName.gdshader")
         }
 
     }
@@ -156,21 +185,20 @@ class ShaderSyntaxTransformation : VisualTransformation {
         return TransformedText(result, OffsetMapping.Identity)
     }
 }
-fun saveShaderFile(activity: ComponentActivity, content: String) {
-    // Vérifier si on a la permission
+fun saveShaderFile(activity: ComponentActivity, content: String, name: String) {
     if (ActivityCompat.checkSelfPermission(activity, Manifest.permission.WRITE_EXTERNAL_STORAGE)
         != PackageManager.PERMISSION_GRANTED) {
-
-        // Si non, on la demande
         ActivityCompat.requestPermissions(activity, arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), 1)
         return
     }
 
     try {
-        // Sur les versions récentes, on utilise le dossier spécifique à l'app pour éviter les soucis
-        val file = File(activity.getExternalFilesDir(null), "my_shader.gdshader")
+        // On utilise le nom saisi par l'utilisateur
+        val finalName = if (name.endsWith(".gdshader")) name else "$name.gdshader"
+        val file = File(activity.getExternalFilesDir(null), finalName)
+
         file.writeText(content)
-        Toast.makeText(activity, "Sauvegardé dans : ${file.absolutePath}", Toast.LENGTH_LONG).show()
+        Toast.makeText(activity, "Sauvegardé : ${file.name}", Toast.LENGTH_LONG).show()
     } catch (e: Exception) {
         Toast.makeText(activity, "Erreur : ${e.message}", Toast.LENGTH_SHORT).show()
     }
@@ -221,12 +249,38 @@ fun updateShaderType(currentValue: TextFieldValue, newType: String): TextFieldVa
             void process() {
                 // Animation par frame
             }
+        """.trimIndent(),
+        "2d_RadialBlur" to """
+            shader_type canvas_item;
+            uniform sampler2D screen_texture : hint_screen_texture, filter_linear_mipmap;
+            uniform float blur_power : hint_range(0.0, 1.0) = 0.01;      
+            uniform float chromatic_power : hint_range(0.0, 1.0) = 0.02; 
+            uniform vec2 center = vec2(0.5, 0.5);                       
+            uniform int samples = 20; 
+            void fragment() {
+                vec2 direction = SCREEN_UV - center;
+                float dist = length(direction);
+                float factor = dist * blur_power;
+                vec3 final_color = vec3(0.0);
+	            for(int i = 0; i < samples; i++) {
+                    float scale = 1.0 - factor * (float(i) / float(samples - 1));
+            
+                    vec2 uv_r = center + direction * scale * (1.0 + chromatic_power * dist);
+                    vec2 uv_g = center + direction * scale;
+                    vec2 uv_b = center + direction * scale * (1.0 - chromatic_power * dist);
+            
+                    float r = texture(screen_texture, uv_r).r;
+                    float g = texture(screen_texture, uv_g).g;
+                    float b = texture(screen_texture, uv_b).b;
+            
+                    final_color += vec3(r, g, b);
+                }
+                final_color /= float(samples);
+                COLOR = vec4(final_color, 1.0);
+            }
         """.trimIndent()
     )
 
     val newText = shaderTemplates[newType] ?: "shader_type $newType;"
-
-    // On remplace tout le texte pour avoir une base propre,
-    // ou on pourrait fusionner si tu préfères garder tes variables.
     return TextFieldValue(text = newText, selection = TextRange(newText.length))
 }
